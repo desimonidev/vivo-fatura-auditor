@@ -23,6 +23,12 @@ RE_TITULO_NUMERO = re.compile(
     re.IGNORECASE,
 )
 
+# REGEX DO CLIENTE
+RE_CLIENTE = re.compile(
+    r"^\s*NOME\s*:\s*(?!DO\s+CLIENTE\b)([^\n]+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
 RE_NFCOM = re.compile(r"N[ºo°]\s*NFCOM\s*(\d+)\s*-\s*S[ÉE]RIE\s*(\d+)(?:/DATA DE EMISSÃO:?\s*(\d{2}/\d{2}/\d{4}))?", re.IGNORECASE)
 RE_VENCIMENTO = re.compile(r"Vencimento\s*(\d{2}/\d{2}/\d{4})", re.IGNORECASE)
 RE_TOTAL_PAGAR = re.compile(r"Total\s*a\s*Pagar\s*-\s*R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})", re.IGNORECASE)
@@ -73,9 +79,9 @@ RE_DIARIA_EXCEDENTE = re.compile(
     re.IGNORECASE
 )
 
-# CORREÇÃO DEFINITIVA DOS PREÇOS
-PRECO_DIARIA_AMERICAS_EUROPA = 39.99 # O valor de 39,99 é A/E
-PRECO_DIARIA_MUNDO = 59.99 # O valor de 59,99 é Mundo
+# PREÇOS: A/E = 39.99 e Mundo = 59.99
+PRECO_DIARIA_AMERICAS_EUROPA = 39.99 
+PRECO_DIARIA_MUNDO = 59.99 
 
 # ============================================================
 # HELPERS
@@ -101,6 +107,55 @@ def _converter_para_gb(consumo_str: str) -> float:
             elif unidade == "KB": total_gb += valor / (1024.0 * 1024.0)
         except ValueError: pass
     return round(total_gb, 3)
+
+def _limpar_razao_social(nome_completo: str) -> str:
+    """
+    Transforma 'ATECH - NEGOCIOS EM TECNOLOGIAS SA' em 'ATECH'.
+    Transforma 'APTAR DO BRASIL EMBALAGENS LTDA' em 'APTAR'.
+    Ignora preposições e palavras genéricas para pegar a raiz real.
+    """
+    if not nome_completo:
+        return "CLIENTE DESCONHECIDO"
+    
+    # Limpa pontuações e transforma em maiúsculas
+    nome_limpo = re.sub(r"[^\w\s]", " ", nome_completo).upper()
+    palavras = nome_limpo.split()
+    
+    if not palavras:
+        return "CLIENTE DESCONHECIDO"
+
+    # Lista de preposições e palavras genéricas que não devem ser a raiz
+    stop_words = {
+        "DO", "DA", "DE", "DOS", "DAS", "E", "EM", "A", "O", "AS", "OS", 
+        "NEGOCIOS", "NEGOCIOS", "COMERCIO", "INDUSTRIA", "SERVICOS", "TECNOLOGIA", 
+        "TECNOLOGIAS", "EMBALAGENS", "BRASIL", "LTDA", "SA", "S/A", "ME", "EPP"
+    }
+    
+    # Encontra a primeira palavra que não seja stop word
+    palavra_base = next((p for p in palavras if p not in stop_words), palavras[0])
+    
+    # Retorna a palavra base, limitada a 20 caracteres
+    return palavra_base[:20]
+
+def _nome_empresa_valido(nome: str) -> bool:
+    if not nome:
+        return False
+
+    nome_normalizado = re.sub(r"\s+", " ", nome).strip().upper()
+
+    nomes_invalidos = {
+        "CLIENTE",
+        "DO CLIENTE",
+        "EMPRESA",
+        "EMPRESA DESCONHECIDA",
+        "CLIENTE DESCONHECIDO",
+    }
+
+    return (
+        nome_normalizado not in nomes_invalidos
+        and len(nome_normalizado) >= 3
+    )
+
 
 def _secao_em(pos: int, secoes: list[tuple[int, str]]) -> str:
     atual = "OUTROS"
@@ -165,12 +220,24 @@ def ler_fatura_completa(caminho_pdf: str) -> dict:
     
     diarias_avulsas: list[dict] = []
     pacotes_travel_mensal: dict[str, dict] = {}
+    
+    razao_social_bruta = "CLIENTE DESCONHECIDO"
 
     doc = fitz.open(caminho_pdf)
     try:
         for page in doc:
             texto = page.get_text()
             if not texto: continue
+
+            # --- Extrair Nome do Cliente ---
+            if razao_social_bruta == "CLIENTE DESCONHECIDO":
+                m_cliente = RE_CLIENTE.search(texto)
+
+                if m_cliente:
+                    nome_encontrado = m_cliente.group(1).strip()
+
+                    if _nome_empresa_valido(nome_encontrado):
+                        razao_social_bruta = nome_encontrado
 
             if "Total a Pagar" in texto or "NFCOM" in texto:
                 m_venc = RE_VENCIMENTO.search(texto)
@@ -280,7 +347,12 @@ def ler_fatura_completa(caminho_pdf: str) -> dict:
                 "valor": l["valor"]
             })
 
+    # APLICA A NOVA FUNÇÃO DE LIMPEZA AQUI
+    cliente_minimizado = _limpar_razao_social(razao_social_bruta)
+
     return {
+        "cliente": cliente_minimizado,
+        "razao_social_completa": razao_social_bruta,
         "linhas": tabela_final, "total_linhas": len(tabela_final), "soma_mensalidades": round(soma_total, 2),
         "tem_parcelamento": tem_parcelamento, "ligacoes": ligacoes, 
         "excedentes_ligacoes": ligacoes_pagas, "excedentes_diarias": diarias_avulsas,
