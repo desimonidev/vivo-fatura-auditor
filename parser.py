@@ -1,34 +1,33 @@
-"""
-parser.py — Auditor de Faturas Vivo
-Extrai: linhas SMART, mensalidade, consumo de franquia, Vivo Travel e LIGAÇÕES.
-Layout alvo: faturas Vivo Empresas (PDF texto selecionável, extraído via PyMuPDF).
-"""
-
 import re
 import fitz  # PyMuPDF
 
-
 # ============================================================
-# 1) REGEX — LINHAS / PLANOS / MENSALIDADE
+# REGEX PARA A NOTA FISCAL E TABELAS
 # ============================================================
 
-RE_SMART = re.compile(
-    r"(\d{2}-\d{4,5}-\d{4})\s+"                                # número (11-99999-9999)
-    r"((?:SMART\s+EMPRESAS\s+[\w\.]+\s+(?:TE|CD|TD))|(?:PLANO\s+BASE\s+INTERNET\s+PJ))\s+"  # plano
-    r"(\d{1,3}(?:\.\d{3})*,\d{2})",                             # valor
+RE_PLANO_VALOR_NF = re.compile(
+    r"((?:SMART\s+EMPRESAS\s+[\w\.]+\s+(?:TE|CD|TD))|(?:PLANO\s+BASE\s+INTERNET\s+PJ))"
+    r".*?(\d{1,3}(?:\.\d{3})*,\d{2})",
+    re.IGNORECASE | re.DOTALL
+)
+
+RE_SMART_TABELA = re.compile(
+    r"(\d{2}-\d{4,5}-\d{4})\s+"
+    r"((?:SMART\s+EMPRESAS\s+[\w\.]+\s+(?:TE|CD|TD))|(?:PLANO\s+BASE\s+INTERNET\s+PJ))\s+"
+    r"(\d{1,3}(?:\.\d{3})*,\d{2})",
     re.IGNORECASE,
 )
 
-# Cabeçalho da seção de detalhamento por linha
 RE_TITULO_NUMERO = re.compile(
     r"VEJA\s+O\s+USO\s+DETALHADO\s+DO\s+VIVO\s+(\d{2}-\d{4,5}-\d{4})",
     re.IGNORECASE,
 )
 
-
-# ============================================================
-# 2) REGEX — CONSUMO DE FRANQUIA
-# ============================================================
+RE_NFCOM = re.compile(r"N[ºo°]\s*NFCOM\s*(\d+)\s*-\s*S[ÉE]RIE\s*(\d+)(?:/DATA DE EMISSÃO:?\s*(\d{2}/\d{2}/\d{4}))?", re.IGNORECASE)
+RE_VENCIMENTO = re.compile(r"Vencimento\s*(\d{2}/\d{2}/\d{4})", re.IGNORECASE)
+RE_TOTAL_PAGAR = re.compile(r"Total\s*a\s*Pagar\s*-\s*R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})", re.IGNORECASE)
+RE_MES_REF = re.compile(r"M[ÊE]S\s*DE\s*REFER[ÊE]NCIA:?\s*(\d{2}/\d{4})", re.IGNORECASE)
+RE_CICLO = re.compile(r"Per[íi]odo:?\s*(\d{2}/\d{2}/\d{4})\s*a\s*(\d{2}/\d{2}/\d{4})", re.IGNORECASE)
 
 RE_CONSUMO_FRANQUIA = re.compile(
     r"FRANQUIA\s+INTERNET\s+COMPARTILHADA\s+"
@@ -37,267 +36,253 @@ RE_CONSUMO_FRANQUIA = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-
-# ============================================================
-# 3) REGEX — VIVO TRAVEL
-# ============================================================
-
 RE_TRAVEL_EXATO = re.compile(
     r"(VIVO\s+TRAVEL\s+[\wÀ-ÿ\s]+?)\s+.*?\s+-\s+-\s+(\d{1,3}(?:\.\d{3})*,\d{2})",
     re.IGNORECASE,
 )
 
-
-# ============================================================
-# 4) REGEX — LIGAÇÕES (BLOCO MULTI-LINHA DO PYMUPDF)
-# ============================================================
-#
-# O PyMuPDF extrai cada célula numa linha. O bloco real é:
-#
-#   15/09/26
-#   16:30:58
-#   DDD 011
-#   11-97634-0923
-#   (opcional: tarifa, ex: "- VO" | "Normal" | "Reduzida")
-#   01m48s
-#   0,00
-#
-# Quando a coluna Tarifa vem vazia, o PyMuPDF simplesmente PULA a linha
-# e o próximo token já é a duração. Por isso a tarifa é opcional.
+RE_PARCELAMENTO = re.compile(
+    r"Parcelamento\s+de\s+Aparelho\s*/\s*Acess[óo]rio\s+(\d{2}-\d{4,5}-\d{4})"
+    r".*?(\d{1,2}/\d{1,2})\s+(\d{1,3}(?:\.\d{3})*,\d{2})",
+    re.IGNORECASE | re.DOTALL,
+)
 
 RE_LIGACAO_BLOCO = re.compile(
     r"(?P<data>\d{2}/\d{2}/\d{2})\s*\n\s*"
     r"(?P<hora>\d{2}:\d{2}:\d{2})\s*\n\s*"
     r"(?P<localidade>DDD\s+\d+)\s*\n\s*"
     r"(?P<numero>[\d\-]+)\s*\n\s*"
-    r"(?P<tarifa>(?:[-\wÀ-ÿ][^\n]*?))?\s*\n?\s*"                # tarifa opcional
+    r"(?P<tarifa>(?:[-\wÀ-ÿ][^\n]*?))?\s*\n?\s*"
     r"(?P<duracao>\d{2}m\d{2}s)\s*\n\s*"
     r"(?P<valor>\d{1,3}(?:\.\d{3})*,\d{2})",
     re.MULTILINE | re.DOTALL,
 )
 
-
-# ============================================================
-# 5) REGEX — SEÇÕES (para classificar cada ligação)
-# ============================================================
-
 RE_SECAO = re.compile(
     r"("
-    r"Utilização\s+Acima\s+do\s+Contratado"
-    r"|Ligações\s+de\s+Longa\s+Distância"
-    r"|Ligações\s+Locais[^\n]*"
-    r"|NO\s+BRASIL\s*-\s*EM\s+ROAMING"
-    r"|Para\s+Celulares\s+Vivo"
-    r"|Para\s+Celulares\s+de\s+Outras\s+Operadoras"
-    r"|Para\s+Fixo\s+Vivo"
-    r"|Para\s+Fixo\s+de\s+Outras\s+Operadoras"
-    r"|Para\s+Outros\s+Estados[^\n]*"
-    r"|Para\s+Dentro\s+do\s+Estado[^\n]*"
-    r"|Para\s+Outros\s+Países"
-    r"|OPERADORA\s+\d+[^\n]*"
+    r"Utilização\s+Acima\s+do\s+Contratado|Ligações\s+de\s+Longa\s+Distância|Ligações\s+Locais[^\n]*|"
+    r"NO\s+BRASIL\s*-\s*EM\s+ROAMING|Para\s+Celulares\s+Vivo|Para\s+Celulares\s+de\s+Outras\s+Operadoras|"
+    r"Para\s+Fixo\s+Vivo|Para\s+Fixo\s+de\s+Outras\s+Operadoras|Para\s+Outros\s+Estados[^\n]*|"
+    r"Para\s+Dentro\s+do\s+Estado[^\n]*|Para\s+Outros\s+Países|OPERADORA\s+\d+[^\n]*"
     r")",
     re.IGNORECASE,
 )
 
+RE_DIARIA_EXCEDENTE = re.compile(
+    r"(\d{2}/\d{2}/\d{2})\s+-\s+DI[ÁA]RIA\s+VIVO\s+TRAVEL\s+(\d+)\s+dia(?:s)?\s+(\d{1,3}(?:\.\d{3})*,\d{2})",
+    re.IGNORECASE
+)
+
+# CORREÇÃO DEFINITIVA DOS PREÇOS
+PRECO_DIARIA_AMERICAS_EUROPA = 39.99 # O valor de 39,99 é A/E
+PRECO_DIARIA_MUNDO = 59.99 # O valor de 59,99 é Mundo
 
 # ============================================================
-# 6) HELPERS
+# HELPERS
 # ============================================================
 
 def _para_float(s: str) -> float:
-    """'1.234,56' -> 1234.56"""
     return float(s.replace(".", "").replace(",", "."))
 
-
 def _normaliza_telefone(tel: str) -> str:
-    """Remove tudo que não é dígito."""
     return re.sub(r"\D", "", tel)
 
-
 def _converter_para_gb(consumo_str: str) -> float:
-    """Converte 'X MB Y KB' / 'X GB' / 'X,Y TB' em GB (float)."""
-    if not consumo_str or consumo_str == "-":
-        return 0.0
+    if not consumo_str or consumo_str == "-": return 0.0
     consumo_str = str(consumo_str).upper()
     total_gb = 0.0
     partes = re.findall(r"(\d+(?:[.,]\d+)?)\s*(TB|GB|MB|KB)", consumo_str)
     for valor_str, unidade in partes:
         try:
             valor = float(valor_str.replace(",", "."))
-            if unidade == "TB":
-                total_gb += valor * 1024.0
-            elif unidade == "GB":
-                total_gb += valor
-            elif unidade == "MB":
-                total_gb += valor / 1024.0
-            elif unidade == "KB":
-                total_gb += valor / (1024.0 * 1024.0)
-        except ValueError:
-            pass
+            if unidade == "TB": total_gb += valor * 1024.0
+            elif unidade == "GB": total_gb += valor
+            elif unidade == "MB": total_gb += valor / 1024.0
+            elif unidade == "KB": total_gb += valor / (1024.0 * 1024.0)
+        except ValueError: pass
     return round(total_gb, 3)
 
-
 def _secao_em(pos: int, secoes: list[tuple[int, str]]) -> str:
-    """Dado um offset no texto, retorna o nome da seção mais recente antes dele."""
     atual = "OUTROS"
     for ini, nome in secoes:
-        if ini <= pos:
-            atual = nome
-        else:
-            break
+        if ini <= pos: atual = nome
+        else: break
     return atual
-
-
-# ============================================================
-# 7) EXTRAÇÃO DE LIGAÇÕES POR PÁGINA
-# ============================================================
 
 def _extrair_ligacoes_pagina(texto_pagina: str, num_linha: str) -> list[dict]:
     ligacoes = []
-
-    # lista de (offset, nome_da_seção) para classificar cada ligação
-    secoes = [(m.start(), re.sub(r"\s+", " ", m.group(1)).strip())
-              for m in RE_SECAO.finditer(texto_pagina)]
-
+    secoes = [(m.start(), re.sub(r"\s+", " ", m.group(1)).strip()) for m in RE_SECAO.finditer(texto_pagina)]
     for m in RE_LIGACAO_BLOCO.finditer(texto_pagina):
         secao = _secao_em(m.start(), secoes)
-
-        # descarta o que for internet (não é ligação)
-        if "INTERNET" in secao.upper():
-            continue
-
+        if "INTERNET" in secao.upper(): continue
         tarifa = (m.group("tarifa") or "").strip()
-        # limpa casos como "- VO" / "Normal - VO"
-        if not tarifa or tarifa in {"-", "--"}:
-            tarifa = "-"
-
+        if not tarifa or tarifa in {"-", "--"}: tarifa = "-"
         ligacoes.append({
-            "linha_origem": num_linha,
-            "secao": secao,
-            "data": m.group("data"),
-            "hora": m.group("hora"),
-            "localidade": m.group("localidade").strip(),
+            "linha_origem": num_linha, "secao": secao, "data": m.group("data"),
+            "hora": m.group("hora"), "localidade": m.group("localidade").strip(),
             "numero_destino": _normaliza_telefone(m.group("numero")),
-            "tarifa_tipo": tarifa,
-            "duracao": m.group("duracao"),
+            "tarifa_tipo": tarifa, "duracao": m.group("duracao"),
             "valor": _para_float(m.group("valor")),
         })
-
     return ligacoes
 
+def _diagnosticar_diarias_travel(valor_total: float) -> dict | None:
+    if not valor_total or valor_total <= 0: return None
+    A, M, TOL = PRECO_DIARIA_AMERICAS_EUROPA, PRECO_DIARIA_MUNDO, 0.05
+    combinacoes = []
+    for qtd_mundo in range(0, 31):
+        for qtd_americas in range(0, 31):
+            if qtd_mundo == 0 and qtd_americas == 0: continue
+            total = qtd_mundo * M + qtd_americas * A
+            if abs(total - valor_total) <= TOL:
+                combinacoes.append({"americas_europa": qtd_americas, "mundo": qtd_mundo, "total_calculado": round(total, 2)})
+    combinacoes.sort(key=lambda c: (c["americas_europa"] + c["mundo"], c["mundo"]))
+    if not combinacoes:
+        return {"valor_total": round(valor_total, 2), "possibilidades": [], "status": "Valor não bate."}
+    melhor = combinacoes[0]
+    regiao = "Américas/Europa" if melhor["mundo"] == 0 else ("Mundo" if melhor["americas_europa"] == 0 else "Mista")
+    return {
+        "valor_total": round(valor_total, 2), "possibilidades": combinacoes,
+        "regiao_provavel": regiao,
+        "resumo": f"{melhor['americas_europa']} dia(s) A/E + {melhor['mundo']} dia(s) Mundo"
+    }
 
 # ============================================================
-# 8) FUNÇÃO PRINCIPAL
+# FUNÇÃO PRINCIPAL
 # ============================================================
 
 def ler_fatura_completa(caminho_pdf: str) -> dict:
-    """
-    Lê a fatura Vivo e devolve:
-        {
-            "linhas": [...],                # uma por número, com mensalidade/consumo/travel
-            "total_linhas": int,
-            "soma_mensalidades": float,
-            "ligacoes": [...]               # todas as ligações de todas as linhas
-        }
-    """
-    linhas_moveis = []
-    travels_por_linha = {}
-    consumo_por_linha = {}
-    ligacoes = []
+    linhas_por_numero: dict[str, dict] = {}
+    consumo_por_linha: dict[str, str] = {}
+    parcelamentos_por_linha: dict[str, dict] = {}
+    ligacoes: list[dict] = []
+    
+    planos_nf = []
+    numeros_encontrados = set()
+    notas_fiscais = []
+    boleto_info = {}
+    ciclo_fatura = "-"
+    
+    diarias_avulsas: list[dict] = []
+    pacotes_travel_mensal: dict[str, dict] = {}
 
     doc = fitz.open(caminho_pdf)
     try:
         for page in doc:
             texto = page.get_text()
-            if not texto:
-                continue
+            if not texto: continue
 
-            # ---------- 1. Linhas SMART + mensalidade ----------
-            for m in RE_SMART.finditer(texto):
-                linhas_moveis.append({
-                    "numero": _normaliza_telefone(m.group(1)),
-                    "plano": re.sub(r"\s+", " ", m.group(2)).strip(),
-                    "mensalidade": _para_float(m.group(3)),
-                })
+            if "Total a Pagar" in texto or "NFCOM" in texto:
+                m_venc = RE_VENCIMENTO.search(texto)
+                m_total = RE_TOTAL_PAGAR.search(texto)
+                m_ref = RE_MES_REF.search(texto)
+                m_ciclo = RE_CICLO.search(texto)
+                if m_ciclo and ciclo_fatura == "-": ciclo_fatura = f"{m_ciclo.group(1)} a {m_ciclo.group(2)}"
+                
+                if m_venc and m_total and not boleto_info:
+                    boleto_info = {"vencimento": m_venc.group(1), "total_pagar": _para_float(m_total.group(1)), "mes_referencia": m_ref.group(1) if m_ref else "-"}
+                
+                m_nfcom = RE_NFCOM.search(texto)
+                if m_nfcom and not notas_fiscais:
+                    valor_nf = boleto_info.get("total_pagar", 0.0) 
+                    
+                    m_valor_nf = re.search(r"VALOR\s+TOTAL\s+NF\s*\n?\s*(\d{1,3}(?:\.\d{3})*,\d{2})", texto, re.IGNORECASE)
+                    if m_valor_nf:
+                        valor_nf = _para_float(m_valor_nf.group(1))
 
-            # ---------- 2. Consumo de franquia ----------
-            if "FRANQUIA INTERNET COMPARTILHADA" in texto.upper():
-                texto_limpo = re.sub(r"\s+", " ", texto)
-                m_cons = RE_CONSUMO_FRANQUIA.search(texto_limpo)
-                m_titulo = RE_TITULO_NUMERO.search(texto) or re.search(
-                    r"VIVO\s+(\d{2}-\d{4,5}-\d{4})", texto
-                )
-                if m_cons and m_titulo:
-                    num = _normaliza_telefone(m_titulo.group(1))
-                    consumo_por_linha[num] = m_cons.group(1).strip()
+                    notas_fiscais.append({
+                        "nfcom": m_nfcom.group(1), 
+                        "serie": m_nfcom.group(2), 
+                        "data_emissao": m_nfcom.group(3) if m_nfcom.group(3) else "-",
+                        "valor_total": valor_nf, 
+                        "pagina": page.number + 1
+                    })
 
-            # ---------- 3. Travel + Ligações (só em páginas de detalhe da linha) ----------
             m_titulo = RE_TITULO_NUMERO.search(texto)
-            if not m_titulo:
-                continue
-            num_pagina = _normaliza_telefone(m_titulo.group(1))
+            num_pagina = m_titulo.group(1) if m_titulo else None
+            if num_pagina: numeros_encontrados.add(num_pagina)
 
-            # Vivo Travel
-            if "VIVO TRAVEL" in texto.upper():
-                m_travel = RE_TRAVEL_EXATO.search(texto)
-                if m_travel:
-                    nome_t = re.sub(r"\s+", " ", m_travel.group(1)).strip()
-                    valor_t = _para_float(m_travel.group(2))
-                    if num_pagina in travels_por_linha:
-                        travels_por_linha[num_pagina]["valor"] += valor_t
-                        travels_por_linha[num_pagina]["nome"] += f" + {nome_t}"
-                    else:
-                        travels_por_linha[num_pagina] = {"valor": valor_t, "nome": nome_t}
+            for m in RE_SMART_TABELA.finditer(texto):
+                linhas_por_numero[m.group(1)] = {"plano": re.sub(r"\s+", " ", m.group(2)).strip(), "mensalidade": _para_float(m.group(3)), "fonte": "Tabela"}
 
-            # Ligações
-            ligacoes.extend(_extrair_ligacoes_pagina(texto, num_pagina))
+            if "ITENS DA FATURA" in texto or "NOTA FISCAL" in texto.upper() or "Nº NFCOM" in texto:
+                for m in RE_PLANO_VALOR_NF.finditer(texto):
+                    planos_nf.append({"plano": re.sub(r"\s+", " ", m.group(1)).strip(), "valor": _para_float(m.group(2))})
+
+            if "FRANQUIA INTERNET COMPARTILHADA" in texto.upper():
+                m_cons = RE_CONSUMO_FRANQUIA.search(re.sub(r"\s+", " ", texto))
+                if m_cons and num_pagina: consumo_por_linha[num_pagina] = m_cons.group(1).strip()
+
+            for m in RE_PARCELAMENTO.finditer(texto):
+                parcelamentos_por_linha[m.group(1)] = {"valor": _para_float(m.group(3)), "parcela": m.group(2)}
+
+            if num_pagina:
+                m_pacote = RE_TRAVEL_EXATO.search(texto)
+                if m_pacote:
+                    pacotes_travel_mensal[num_pagina] = {
+                        "nome": re.sub(r"\s+", " ", m_pacote.group(1)).strip(),
+                        "valor": _para_float(m_pacote.group(2))
+                    }
+
+                for m_diaria in RE_DIARIA_EXCEDENTE.finditer(texto):
+                    v_diaria = _para_float(m_diaria.group(3))
+                    if v_diaria > 0:
+                        diarias_avulsas.append({
+                            "linha": num_pagina,
+                            "data": m_diaria.group(1),
+                            "quantidade": f"{m_diaria.group(2)} dia(s)",
+                            "valor": v_diaria
+                        })
+
+                ligacoes.extend(_extrair_ligacoes_pagina(texto, num_pagina))
     finally:
         doc.close()
 
-    # ---------- 4. Consolidação das linhas ----------
-    vistos = set()
-    linhas_unicas = []
-    for item in linhas_moveis:
-        if item["numero"] not in vistos:
-            vistos.add(item["numero"])
-            linhas_unicas.append(item)
-
+    if not linhas_por_numero and planos_nf and len(numeros_encontrados) == 1:
+        unico_num = list(numeros_encontrados)[0]
+        for p in planos_nf:
+            if "SMART" in p["plano"].upper(): linhas_por_numero[unico_num] = {"plano": p["plano"], "mensalidade": p["valor"], "fonte": "NF"}; break
+        
+    maior_nfcom = max(notas_fiscais, key=lambda nf: nf["valor_total"]) if notas_fiscais else None
+    tem_parcelamento = len(parcelamentos_por_linha) > 0
     tabela_final = []
     soma_total = 0.0
-    for l in linhas_unicas:
-        num = l["numero"]
-        v_t = travels_por_linha.get(num, {"valor": 0.0, "nome": "-"})
+
+    for num, dados in sorted(linhas_por_numero.items()):
         c_gb = _converter_para_gb(consumo_por_linha.get(num, "-"))
+        if "SERVICO" in dados["plano"].upper() and planos_nf:
+            for p in planos_nf:
+                if "SMART" in p["plano"].upper():
+                    dados["plano"], dados["mensalidade"] = p["plano"], p["valor"]; break
 
-        tabela_final.append({
-            "numero": num,
-            "plano": l["plano"],
-            "mensalidade": l["mensalidade"],
-            "consumo_dados_gb": c_gb,
-            "travel": v_t["valor"] if v_t["valor"] > 0 else "-",
-            "pacote_travel": v_t["nome"],
-        })
-        soma_total += l["mensalidade"]
+        pacote = pacotes_travel_mensal.get(num, {"nome": "-", "valor": None})
 
-    tabela_final.sort(key=lambda x: x["numero"])
+        row = {
+            "numero": num, "plano": dados["plano"], "mensalidade": dados["mensalidade"], "consumo_dados_gb": c_gb,
+            "pacote_travel_nome": pacote["nome"], "pacote_travel_valor": pacote["valor"]
+        }
+        if tem_parcelamento:
+            p = parcelamentos_por_linha.get(num)
+            row["parcelamento"], row["parcela"] = (p["valor"] if p else 0.0), (p["parcela"] if p else "-")
+        tabela_final.append(row)
+        soma_total += dados["mensalidade"]
 
-    # ---------- 5. Ordenação cronológica das ligações ----------
-    def _chave_lig(l):
-        # converte "dd/mm/aa" + "HH:MM:SS" em string ordenável "yymmddHHMMSS"
-        d = l.get("data", "")
-        h = l.get("hora", "")
-        try:
-            dd, mm, aa = d.split("/")
-            hh, mi, ss = h.split(":")
-            return f"{aa}{mm}{dd}{hh}{mi}{ss}"
-        except Exception:
-            return ""
-
-    ligacoes.sort(key=_chave_lig)
+    ligacoes.sort(key=lambda x: f"{x.get('data','')} {x.get('hora','')}")
+    
+    ligacoes_pagas = []
+    for l in ligacoes:
+        if l["valor"] > 0:
+            ligacoes_pagas.append({
+                "linha": l["linha_origem"],
+                "servico": f"Ligação ({l['duracao']})",
+                "data": l["data"],
+                "detalhe": l["numero_destino"],
+                "valor": l["valor"]
+            })
 
     return {
-        "linhas": tabela_final,
-        "total_linhas": len(tabela_final),
-        "soma_mensalidades": round(soma_total, 2),
-        "ligacoes": ligacoes,
+        "linhas": tabela_final, "total_linhas": len(tabela_final), "soma_mensalidades": round(soma_total, 2),
+        "tem_parcelamento": tem_parcelamento, "ligacoes": ligacoes, 
+        "excedentes_ligacoes": ligacoes_pagas, "excedentes_diarias": diarias_avulsas,
+        "notas_fiscais": notas_fiscais, "maior_nfcom": maior_nfcom, "boleto": boleto_info, "ciclo_fatura": ciclo_fatura
     }
