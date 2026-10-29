@@ -1,0 +1,12 @@
+# Faturas reais — NUNCA subir
+samples/*.pdf
+*.pdf
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Streamlit
+.streamlit/secrets.toml
